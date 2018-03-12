@@ -1,8 +1,13 @@
+#![feature(proc_macro, conservative_impl_trait, generators)]
+
+extern crate failure;
+extern crate futures_await as futures;
 extern crate tokio;
 extern crate tokio_io;
 extern crate irc;
 
 pub mod irc_gateway;
+pub mod slack_gateway;
 
 #[cfg(test)]
 mod tests {
