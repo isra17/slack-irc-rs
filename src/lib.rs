@@ -5,6 +5,8 @@ extern crate futures_await as futures;
 extern crate tokio;
 extern crate tokio_io;
 extern crate irc;
+extern crate slack;
+extern crate slack_api;
 
 pub mod irc_gateway;
 pub mod slack_gateway;

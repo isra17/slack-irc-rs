@@ -1,10 +1,12 @@
-use slack_gateway::SlackGateway;
+use slack_gateway;
+use slack_gateway::{SlackGateway, SlackGatewayManager};
 use std;
 use std::sync::{Arc, Mutex};
 use tokio;
 use tokio::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
+use tokio_io;
 use irc;
 use irc::proto::irc::IrcCodec;
 use irc::proto::command::Command;
@@ -73,6 +75,7 @@ impl AuthenticationInfoBuilder {
 }
 
 struct IrcGateway {
+    slack_manager: SlackGatewayManager,
 }
 
 pub struct IrcServer {
@@ -81,7 +84,8 @@ pub struct IrcServer {
 
 impl IrcServer {
     pub fn new() -> Self {
-        IrcServer { state: Arc::new(Mutex::new(IrcGateway {})) }
+        let slack_manager = SlackGatewayManager::new();
+        IrcServer { state: Arc::new(Mutex::new(IrcGateway { slack_manager: slack_manager })) }
     }
 
     pub fn run(&self) {
@@ -104,29 +108,49 @@ impl IrcServer {
     }
 }
 
-type IrcStream =
-    Box<futures::stream::Stream<Item = Message, Error = io::Error> + std::marker::Send>;
-type IrcSink = Box<futures::sink::Sink<SinkItem = Message, SinkError = irc::error::IrcError>>;
+type IrcStream = futures::stream::Stream<Item = Message, Error = io::Error> + std::marker::Send;
+type IrcSink = futures::stream::SplitSink<tokio_io::codec::Framed<tokio::net::TcpStream,
+                                                                  irc::proto::IrcCodec>>;
+
 
 impl IrcGateway {
     #[async]
     pub fn handle_socket(shared: Arc<Mutex<Self>>, socket: TcpStream) -> io::Result<()> {
         let (writer, reader) = socket.framed(IrcCodec::new("utf8").expect("unreachable")).split();
+        let mut writer: IrcSink = writer;
         let mut reader = reader.map_err(irc2io);
         let (auth_info, reader) = await!(Self::read_authenticate(Box::new(reader)))?;
 
-        let slack_gateway = {
-            let mut nicks = auth_info.nick.splitn(2, ".");
-            let user = nicks.next().unwrap();
-            let server = nicks.next().ok_or("Missing workspace from nick").map_err(to_io)?;
-            SlackGateway::start(server, user, &auth_info.pass).map_err(to_io)?
+        let (slack_gateway, writer) = {
+            let (user, workspace) = {
+                let mut nicks = auth_info.nick.splitn(2, ".");
+                (String::from(nicks.next().unwrap()),
+                 String::from(nicks.next().ok_or("Missing workspace from nick").map_err(to_io)?))
+            };
+            let slack_result = {
+                let manager = &mut shared.lock().unwrap().slack_manager;
+                manager.start(workspace, user, auth_info.pass.into())
+            };
+
+            match slack_result {
+                    Ok(g) => Ok((g, writer)),
+                    Err(slack_gateway::StartError::MustRegister) => {
+                        await!(Self::register_slack(shared.clone(), &reader, writer))
+                    }
+                    Err(slack_gateway::StartError::InvalidToken(e)) => {
+                        println!("Failed to connect to slack: {:?}", e);
+                        await!(Self::register_slack(shared.clone(), &reader, writer))
+                    }
+                    _ => Err(to_io("Failed to start slack gateway")),
+                }
+                ?
         };
 
-        await!(Self::link_gateways(shared, reader, Box::new(writer), slack_gateway))
+        await!(Self::link_gateways(shared, reader, writer, slack_gateway))
     }
 
     #[async]
-    fn read_authenticate(reader: IrcStream) -> io::Result<(AuthenticationInfo, IrcStream)> {
+    fn read_authenticate(reader: Box<IrcStream>) -> io::Result<(AuthenticationInfo, Box<IrcStream>)> {
         let mut auth_builder = AuthenticationInfoBuilder::new();
         let mut commands_buffer = Vec::new();
         let mut reader = reader;
@@ -145,10 +169,21 @@ impl IrcGateway {
 
     #[async]
     fn link_gateways(_shared: Arc<Mutex<Self>>,
-                     _reader: IrcStream,
+                     _reader: Box<IrcStream>,
                      _writer: IrcSink,
                      _slack: SlackGateway)
                      -> io::Result<()> {
         Ok(())
+    }
+
+    #[async]
+    fn register_slack(_shared: Arc<Mutex<Self>>,
+                      _reader: &IrcStream,
+                      writer: IrcSink)
+                      -> io::Result<(SlackGateway, IrcSink)> {
+        await!(writer.send(Message::new(None, "TEST", vec!["#foo"], None).unwrap()))
+            .map_err(irc2io)?;
+
+        Err(to_io("not implemented"))
     }
 }
