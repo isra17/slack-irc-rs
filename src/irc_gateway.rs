@@ -72,16 +72,16 @@ impl AuthenticationInfoBuilder {
     }
 }
 
-struct IrcGatewayState {
+struct IrcGateway {
 }
 
-pub struct IrcGateway {
-    state: Arc<Mutex<IrcGatewayState>>,
+pub struct IrcServer {
+    state: Arc<Mutex<IrcGateway>>,
 }
 
-impl IrcGateway {
+impl IrcServer {
     pub fn new() -> Self {
-        IrcGateway { state: Arc::new(Mutex::new(IrcGatewayState {})) }
+        IrcServer { state: Arc::new(Mutex::new(IrcGateway {})) }
     }
 
     pub fn run(&self) {
@@ -90,14 +90,13 @@ impl IrcGateway {
         let state = self.state.clone();
         let server = listener.incoming()
             .for_each(move |client| {
-                tokio::spawn(IrcGatewayState::handle_socket(state.clone(), client)
-                    .then(|result| {
-                        match result {
-                            Ok(_) => println!("Client disconnected"),
-                            Err(e) => println!("Error: {:?}", e),
-                        }
-                        Ok(())
-                    }));
+                tokio::spawn(IrcGateway::handle_socket(state.clone(), client).then(|result| {
+                    match result {
+                        Ok(_) => println!("Client disconnected"),
+                        Err(e) => println!("Error: {:?}", e),
+                    }
+                    Ok(())
+                }));
                 Ok(())
             })
             .map_err(|e| panic!("Listener error: {:?}", e));
@@ -109,7 +108,7 @@ type IrcStream =
     Box<futures::stream::Stream<Item = Message, Error = io::Error> + std::marker::Send>;
 type IrcSink = Box<futures::sink::Sink<SinkItem = Message, SinkError = irc::error::IrcError>>;
 
-impl IrcGatewayState {
+impl IrcGateway {
     #[async]
     pub fn handle_socket(shared: Arc<Mutex<Self>>, socket: TcpStream) -> io::Result<()> {
         let (writer, reader) = socket.framed(IrcCodec::new("utf8").expect("unreachable")).split();

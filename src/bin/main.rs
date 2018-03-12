@@ -1,9 +1,9 @@
 extern crate slack_irc;
 
-use slack_irc::irc_gateway::IrcGateway;
+use slack_irc::irc_gateway::IrcServer;
 
 fn main() {
     println!("Starting...");
-    let irc = IrcGateway::new();
+    let irc = IrcServer::new();
     irc.run();
 }

@@ -35,7 +35,7 @@ impl slack::EventHandler for MyHandler {
 }
 
 fn main() {
-    let api_key = "xoxp-327734254020-328812430135-328815007959-9d8ef7119ad2db66770c8841bcec1ee9";
+    let api_key = "";
     let mut handler = MyHandler {};
     let r = RtmClient::login_and_run(&api_key, &mut handler);
     match r {
