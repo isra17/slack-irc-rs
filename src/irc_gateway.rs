@@ -1,6 +1,6 @@
 use slack_gateway::SlackGateway;
 use std;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio;
 use tokio::io;
 use tokio::net::{TcpListener, TcpStream};
@@ -76,59 +76,58 @@ struct IrcGatewayState {
 }
 
 pub struct IrcGateway {
-    state: Arc<IrcGatewayState>,
+    state: Arc<Mutex<IrcGatewayState>>,
 }
 
 impl IrcGateway {
     pub fn new() -> Self {
-        IrcGateway { state: Arc::new(IrcGatewayState {}) }
+        IrcGateway { state: Arc::new(Mutex::new(IrcGatewayState {})) }
     }
 
     pub fn run(&self) {
         let addr = "127.0.0.1:6667".parse().unwrap();
         let listener = TcpListener::bind(&addr).unwrap();
         let state = self.state.clone();
-        let server = async_block! {
-            #[async]
-            for client in listener.incoming() {
-                tokio::spawn(state.clone().handle_socket(client).then(|result| {
-                    match result {
-                        Ok(_) => println!("Client disconnected"),
-                        Err(e) => println!("Error: {:?}", e),
-                    }
-                    Ok(())
-                }));
-            }
-            Ok::<(), io::Error>(())
-        };
-        tokio::run(server.map_err(|_| ()));
+        let server = listener.incoming()
+            .for_each(move |client| {
+                tokio::spawn(IrcGatewayState::handle_socket(state.clone(), client)
+                    .then(|result| {
+                        match result {
+                            Ok(_) => println!("Client disconnected"),
+                            Err(e) => println!("Error: {:?}", e),
+                        }
+                        Ok(())
+                    }));
+                Ok(())
+            })
+            .map_err(|e| panic!("Listener error: {:?}", e));
+        tokio::run(server);
     }
 }
 
-type IrcReader =
+type IrcStream =
     Box<futures::stream::Stream<Item = Message, Error = io::Error> + std::marker::Send>;
-type IrcWriter = Box<futures::sink::Sink<SinkItem = Message, SinkError = irc::error::IrcError>>;
+type IrcSink = Box<futures::sink::Sink<SinkItem = Message, SinkError = irc::error::IrcError>>;
 
 impl IrcGatewayState {
     #[async]
-    pub fn handle_socket(self, socket: TcpStream) -> io::Result<()> {
+    pub fn handle_socket(shared: Arc<Mutex<Self>>, socket: TcpStream) -> io::Result<()> {
         let (writer, reader) = socket.framed(IrcCodec::new("utf8").expect("unreachable")).split();
         let mut reader = reader.map_err(irc2io);
-        let (auth_info, _commands, reader) = await!(Self::read_authenticate(Box::new(reader)))?;
+        let (auth_info, reader) = await!(Self::read_authenticate(Box::new(reader)))?;
 
-        let mut nicks = auth_info.nick.splitn(2, ".");
-        let user = nicks.next().unwrap();
-        let server = nicks.next().ok_or("Missing workspace from nick").map_err(to_io)?;
-        let slack_gateway = SlackGateway::start(server.into(), user.into(), &auth_info.pass)
-            .map_err(to_io)?;
+        let slack_gateway = {
+            let mut nicks = auth_info.nick.splitn(2, ".");
+            let user = nicks.next().unwrap();
+            let server = nicks.next().ok_or("Missing workspace from nick").map_err(to_io)?;
+            SlackGateway::start(server, user, &auth_info.pass).map_err(to_io)?
+        };
 
-        // await!(self.link_gateways(Box::new(writer), reader, slack_gateway))
-        Ok(())
+        await!(Self::link_gateways(shared, reader, Box::new(writer), slack_gateway))
     }
 
     #[async]
-    fn read_authenticate(reader: IrcReader)
-                         -> io::Result<(AuthenticationInfo, Vec<Message>, IrcReader)> {
+    fn read_authenticate(reader: IrcStream) -> io::Result<(AuthenticationInfo, IrcStream)> {
         let mut auth_builder = AuthenticationInfoBuilder::new();
         let mut commands_buffer = Vec::new();
         let mut reader = reader;
@@ -142,13 +141,13 @@ impl IrcGatewayState {
             }
         }
         let auth_info = auth_builder.complete().unwrap();
-        Ok((auth_info, commands_buffer, reader))
+        Ok((auth_info, Box::new(futures::stream::iter_ok(commands_buffer).chain(reader))))
     }
 
     #[async]
-    fn link_gateways(&self,
-                     _writer: IrcWriter,
-                     _reader: IrcReader,
+    fn link_gateways(_shared: Arc<Mutex<Self>>,
+                     _reader: IrcStream,
+                     _writer: IrcSink,
                      _slack: SlackGateway)
                      -> io::Result<()> {
         Ok(())
