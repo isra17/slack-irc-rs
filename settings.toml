@@ -1,0 +1,9 @@
+database = "database.db"
+
+[irc]
+host = "localhost"
+botnick = "slackirc"
+
+[slack]
+client_id = "foo"
+secret = "top_secret"

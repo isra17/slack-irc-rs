@@ -1,8 +1,11 @@
+use bcrypt::{DEFAULT_COST, hash, verify};
+use config::Config;
 use std::thread;
-use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use futures::sync::mpsc::{Receiver, Sender, channel};
 use slack;
 use slack::{RtmClient, Event, EventHandler};
+use datastore::{Datastore, UserInfo};
 
 #[derive(Debug)]
 pub enum StartError {
@@ -11,18 +14,12 @@ pub enum StartError {
     InvalidPass,
 }
 
-#[derive(Clone)]
-pub struct UserInfo {
-    pub workspace: String,
-    pub nick: String,
-    pub pass: String,
-    pub token: Option<String>,
-}
-
 pub struct SlackGatewayManager {
-    users: HashMap<(String, String), UserInfo>,
+    _settings: Arc<Mutex<Config>>,
+    db: Datastore,
 }
 
+#[derive(Debug)]
 pub struct SlackGateway {
     pub receiver: Receiver<Event>,
 }
@@ -37,8 +34,14 @@ pub struct SlackGatewayHandler {
 }
 
 impl SlackGatewayManager {
-    pub fn new() -> SlackGatewayManager {
-        SlackGatewayManager { users: Default::default() }
+    pub fn new(settings: Arc<Mutex<Config>>) -> SlackGatewayManager {
+        let db_path = {
+            settings.lock().unwrap().get_str("database").unwrap_or(":memory:".into())
+        };
+        SlackGatewayManager {
+            db: Datastore::open(db_path).expect("Failed to open datastore"),
+            _settings: settings,
+        }
     }
 
     pub fn authenticate(&mut self,
@@ -46,16 +49,19 @@ impl SlackGatewayManager {
                         nick: String,
                         pass: String)
                         -> Option<UserInfo> {
-        let user = self.users.entry((workspace.clone(), nick.clone())).or_insert_with(|| {
-            UserInfo {
+        let user = self.db.find_user(&workspace, &nick).unwrap_or_else(|| {
+            let user = UserInfo {
+                id: 0,
                 workspace: workspace.clone(),
                 nick: nick.clone(),
-                pass: pass.clone(),
+                pass: hash(&pass, DEFAULT_COST).unwrap(),
                 token: None,
-            }
+            };
+            self.db.insert_user(&user).unwrap();
+            user
         });
 
-        if user.pass == pass {
+        if verify(&pass, &user.pass).unwrap_or(false) {
             Some(user.clone())
         } else {
             None
@@ -70,6 +76,8 @@ impl SlackGatewayManager {
         let (send, recv) = channel(0x100);
         let mut task = SlackGatewayTask::new(send, &user)
             .map_err(|e| StartError::InvalidToken(e))?;
+
+        self.db.update_token(&user).unwrap();
         thread::spawn(move || task.run());
 
         Ok(SlackGateway { receiver: recv })
@@ -95,10 +103,4 @@ impl EventHandler for SlackGatewayHandler {
     fn on_event(&mut self, _cli: &RtmClient, _event: Event) {}
     fn on_close(&mut self, _cli: &RtmClient) {}
     fn on_connect(&mut self, _cli: &RtmClient) {}
-}
-
-impl UserInfo {
-    pub fn registration_url(&self) -> String {
-        format!("{}", self.nick)
-    }
 }
