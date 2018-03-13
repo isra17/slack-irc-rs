@@ -11,11 +11,12 @@ pub enum StartError {
     InvalidPass,
 }
 
-struct UserInfo {
-    workspace: String,
-    nick: String,
-    pass: String,
-    token: Option<String>,
+#[derive(Clone)]
+pub struct UserInfo {
+    pub workspace: String,
+    pub nick: String,
+    pub pass: String,
+    pub token: Option<String>,
 }
 
 pub struct SlackGatewayManager {
@@ -39,12 +40,12 @@ impl SlackGatewayManager {
     pub fn new() -> SlackGatewayManager {
         SlackGatewayManager { users: Default::default() }
     }
-    pub fn start(&mut self,
-                 workspace: String,
-                 nick: String,
-                 pass: String)
-                 -> Result<SlackGateway, StartError> {
 
+    pub fn authenticate(&mut self,
+                        workspace: String,
+                        nick: String,
+                        pass: String)
+                        -> Option<UserInfo> {
         let user = self.users.entry((workspace.clone(), nick.clone())).or_insert_with(|| {
             UserInfo {
                 workspace: workspace.clone(),
@@ -54,10 +55,14 @@ impl SlackGatewayManager {
             }
         });
 
-        if user.pass != pass {
-            return Err(StartError::InvalidPass);
+        if user.pass == pass {
+            Some(user.clone())
+        } else {
+            None
         }
+    }
 
+    pub fn start(&mut self, user: &UserInfo) -> Result<SlackGateway, StartError> {
         if user.token.is_none() {
             return Err(StartError::MustRegister);
         }
@@ -90,4 +95,10 @@ impl EventHandler for SlackGatewayHandler {
     fn on_event(&mut self, _cli: &RtmClient, _event: Event) {}
     fn on_close(&mut self, _cli: &RtmClient) {}
     fn on_connect(&mut self, _cli: &RtmClient) {}
+}
+
+impl UserInfo {
+    pub fn registration_url(&self) -> String {
+        format!("{}", self.nick)
+    }
 }
