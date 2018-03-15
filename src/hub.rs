@@ -279,4 +279,8 @@ impl StoredInfo {
         self.info.settings.token = Some(token.into());
         self.datastore.lock().unwrap().update_hub(&self.info).unwrap()
     }
+
+    pub fn token(&self) -> Option<String> {
+        self.info.settings.token.clone()
+    }
 }

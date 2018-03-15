@@ -12,6 +12,7 @@ use hub::{self, Message as HubMessage, StoredInfo};
 
 #[derive(Debug)]
 pub enum Error {
+    NoToken,
     InvalidCode,
     SlackApiError(slack_api::requests::Error),
     SlackAccessError(slack_api::oauth::AccessError<slack_api::requests::Error>),
@@ -57,7 +58,12 @@ impl Gateway<hub::Event> for SlackGateway {
     fn run(self) -> Box<Future<Item = (), Error = ()> + 'static + Send> {
         let SlackGateway { tx, rx, settings, hub } = self;
         let (slack_tx, slack_rx) = mpsc::unbounded();
-        let gateway = Mutex::new(SlackGatewayState::new(tx, slack_tx, settings, hub));
+        let mut gateway = SlackGatewayState::new(tx, slack_tx, settings, hub);
+        match gateway.try_start_slack() {
+            Ok(()) => println!("[Slack] Client started"),
+            Err(e) => println!("[Slack] Client couldn't start: {:?}", e),
+        };
+        let gateway = Mutex::new(gateway);
 
         let hub_rx = rx.map(|m| Either::A(m));
         let slack_rx = slack_rx.map(|m| Either::B(m));
@@ -78,7 +84,27 @@ impl Gateway<hub::Event> for SlackGateway {
                             _ => (),
                         }
                     }
-                    Either::B(_slack_m) => (),
+                    Either::B(SlackEvent::Event(slack_m)) => {
+                        match slack_m {
+                            slack::Event::Message(msg) => {
+                                match *msg {
+                                    slack::Message::Standard(slack::api::MessageStandard { ref channel,
+                                                                               ref text,
+                                                                               ref user,
+                                                                               .. }) => {
+                                        gateway.lock()
+                                            .unwrap()
+                                            .broadcast(HubMessage::Message(user.as_ref().unwrap().clone(),
+                                                                           channel.as_ref().unwrap().clone(),
+                                                                           text.as_ref().unwrap().clone()));
+                                    }
+                                    _ => (),
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                    _ => (),
                 }
                 Ok(())
             })
@@ -202,6 +228,18 @@ impl SlackGatewayState {
                 }
             })?;
         Ok(result.access_token.unwrap())
+    }
+
+    pub fn try_start_slack(&mut self) -> Result<()> {
+        let token = {
+            let hub = self.hub.read().unwrap();
+            hub.token()
+        };
+        if let Some(token) = token {
+            self.start_slack(&token)
+        } else {
+            Err(Error::NoToken)
+        }
     }
 
     pub fn start_slack(&mut self, token: &str) -> Result<()> {

@@ -102,7 +102,10 @@ impl IrcGateway {
                 Either::A(Ok(hub_m)) => {
                     match hub_m.message {
                         HubMessage::Message(from, to, text) => {
-                            irc_tx = await!(IrcWriter::new(irc_tx).privmsg(from, to, text))?.into()
+                            irc_tx = await!(IrcWriter::new(irc_tx)
+                                    .privmsg("isra".into(), "#general".into(), text))
+                                ?
+                                .into()
                         }
                         HubMessage::AdminMessage(text) => {
                             irc_tx = await!(IrcWriter::new(irc_tx)
