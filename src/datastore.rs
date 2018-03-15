@@ -1,17 +1,10 @@
+use serde_json;
 use std;
 use std::path::Path;
 use rusqlite::{self, Connection};
+use hub::HubInfo;
 
 type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Clone)]
-pub struct UserInfo {
-    pub id: u32,
-    pub workspace: String,
-    pub nick: String,
-    pub pass: String,
-    pub token: Option<String>,
-}
 
 #[derive(Debug)]
 pub enum Error {
@@ -44,6 +37,7 @@ impl std::error::Error for Error {
     }
 }
 
+#[derive(Debug)]
 pub struct Datastore {
     conn: Connection,
 }
@@ -55,42 +49,41 @@ impl Datastore {
         Ok(db)
     }
 
-    pub fn find_user(&self, workspace: &str, nick: &str) -> Option<UserInfo> {
+    pub fn find_hub(&self, workspace: &str, nick: &str) -> Option<HubInfo> {
         self.conn
             .query_row(r#"
-            SELECT id, workspace, nick, pass, token
+            SELECT id, workspace, nick, settings
             FROM users
             WHERE workspace = ? AND nick = ?"#,
                        &[&workspace, &nick],
                        |row| {
-                UserInfo {
+                HubInfo {
                     id: row.get("id"),
                     workspace: row.get("workspace"),
                     nick: row.get("nick"),
-                    pass: row.get("pass"),
-                    token: row.get("token"),
+                    settings: serde_json::from_str(&row.get::<_, String>("settings")).unwrap(),
                 }
             })
             .ok()
     }
 
-    pub fn insert_user(&self, user: &UserInfo) -> Result<()> {
+    pub fn insert_hub(&self, hub: &HubInfo) -> Result<()> {
         self.conn
-            .execute("INSERT INTO users (workspace, nick, pass, token)
+            .execute("INSERT INTO users (workspace, nick, settings)
                       \
-                      VALUES (?, ?, ?, ?)",
-                     &[&user.workspace, &user.nick, &user.pass, &user.token])
+                      VALUES (?, ?, ?)",
+                     &[&hub.workspace, &hub.nick, &serde_json::to_string(&hub.settings).unwrap()])
             .map_err(Error::Sqlite)
             .map(|_| ())
     }
 
-    pub fn update_token(&self, user: &UserInfo) -> Result<()> {
+    pub fn update_hub(&self, user: &HubInfo) -> Result<()> {
         self.conn
             .execute(r#"
                 UPDATE users
-                SET token = ?
+                SET settings = ?
                 WHERE id = ? "#,
-                     &[&user.token, &user.id])
+                     &[&serde_json::to_string(&user.settings).unwrap(), &user.id])
             .map_err(Error::Sqlite)
             .map(|_| ())
     }
@@ -103,8 +96,7 @@ impl Datastore {
             id INTEGER PRIMARY KEY,
             workspace TEXT NOT NULL,
             nick TEXT NOT NULL,
-            pass TEXT NOT NULL,
-            token TEXT NULL,
+            settings TEXT NOT NULL,
             UNIQUE (workspace, nick)
         );
         COMMIT;"#)

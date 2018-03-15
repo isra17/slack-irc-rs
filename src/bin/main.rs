@@ -1,6 +1,6 @@
 extern crate slack_irc;
 
-use slack_irc::irc_gateway::IrcServer;
+use slack_irc::irc_server::IrcServer;
 
 fn main() {
     println!("Starting...");

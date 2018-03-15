@@ -1,6 +1,7 @@
 database = "database.db"
 
 [irc]
+listen = "127.0.0.1:6667"
 host = "localhost"
 botnick = "slackirc"
 
