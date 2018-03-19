@@ -2,7 +2,7 @@ use futures::future::Either;
 use slack_gateway::SlackGateway;
 use futures::prelude::*;
 use irc_server::Shared;
-use hub::{self, AuthenticationInfo, Receiver, ChannelSender, Message as HubMessage};
+use hub::{self, AuthenticationInfo, ChannelSender, Message as HubMessage, Receiver};
 use std;
 use std::sync::{Arc, Mutex};
 use tokio;
@@ -30,7 +30,6 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 type AsyncResult<T> = io::Result<std::result::Result<T, Error>>;
 
-
 fn print_err(e: Error) -> io::Result<()> {
     println!("[IRC] Error: {:?}", e);
     Ok(())
@@ -40,10 +39,12 @@ fn irc2io(e: irc::error::IrcError) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, e.compat())
 }
 
-type IrcStream =
-    Box<futures::stream::Stream<Item = IrcMessage, Error = irc::error::IrcError> + std::marker::Send>;
-type IrcSink = futures::stream::SplitSink<tokio_io::codec::Framed<tokio::net::TcpStream,
-                                                                  irc::proto::IrcCodec>>;
+type IrcStream = Box<
+    futures::stream::Stream<Item = IrcMessage, Error = irc::error::IrcError> + std::marker::Send,
+>;
+type IrcSink = futures::stream::SplitSink<
+    tokio_io::codec::Framed<tokio::net::TcpStream, irc::proto::IrcCodec>,
+>;
 
 pub struct AuthInfo {
     pub workspace: String,
@@ -59,7 +60,9 @@ pub struct IrcGateway {
 
 impl IrcGateway {
     pub fn new(shared: Arc<Mutex<Shared>>, client: TcpStream) -> IrcGateway {
-        let (writer, reader) = client.framed(IrcCodec::new("utf8").expect("unreachable")).split();
+        let (writer, reader) = client
+            .framed(IrcCodec::new("utf8").expect("unreachable"))
+            .split();
 
         IrcGateway {
             shared: shared,
@@ -70,7 +73,11 @@ impl IrcGateway {
 
     #[async]
     pub fn run(self) -> io::Result<()> {
-        let IrcGateway { shared, irc_rx, irc_tx } = self;
+        let IrcGateway {
+            shared,
+            irc_rx,
+            irc_tx,
+        } = self;
         let mut irc_tx = irc_tx;
         let (irc_rx, auth_info) = match await!(Self::read_authenticate(irc_rx))? {
             Err(e) => return print_err(e),
@@ -84,9 +91,11 @@ impl IrcGateway {
 
         irc_tx = await!(Self::welcome(shared.clone(), irc_tx, nick.clone()))?;
 
-        let hub_rx = hub_rx.map(|m| Either::A(Ok(m)))
+        let hub_rx = hub_rx
+            .map(|m| Either::A(Ok(m)))
             .or_else(|()| Ok::<_, io::Error>(Either::A(Err(Error::HubClosed))));
-        let irc_rx = irc_rx.map(|m| Either::B(Ok(m)))
+        let irc_rx = irc_rx
+            .map(|m| Either::B(Ok(m)))
             .or_else(|e| Ok::<_, io::Error>(Either::B(Err(Error::IrcError(e)))));
 
         let botnick = {
@@ -99,50 +108,47 @@ impl IrcGateway {
         for message in hub_rx.select(irc_rx) {
             println!("Message: {:?}", message);
             match message {
-                Either::A(Ok(hub_m)) => {
-                    match hub_m.message {
-                        HubMessage::Message(from, to, text) => {
-                            irc_tx = await!(IrcWriter::new(irc_tx)
-                                    .privmsg("isra".into(), "#general".into(), text))
-                                ?
-                                .into()
-                        }
-                        HubMessage::AdminMessage(text) => {
-                            irc_tx = await!(IrcWriter::new(irc_tx)
-                                    .privmsg(botnick.clone(), nick.clone(), text))
-                                ?
-                                .into()
-                        }
-                        HubMessage::Error(text) => {
-                            irc_tx = await!(IrcWriter::new(irc_tx).privmsg(botnick.clone(),
-                                                                           nick.clone(),
-                                                                           format!("ERROR: {}",
-                                                                                   text)))
-                                ?
-                                .into()
-                        }
-                        _ => (),
+                Either::A(Ok(hub_m)) => match hub_m.message {
+                    HubMessage::Message(_from, _to, text) => {
+                        irc_tx = await!(IrcWriter::new(irc_tx).privmsg(
+                            "isra".into(),
+                            "#general".into(),
+                            text
+                        ))?.into()
                     }
-                }
-                Either::B(Ok(irc_m)) => {
-                    match irc_m.command {
-                        Command::PRIVMSG(to, msg) => {
-                            if to == botnick {
-                                let mut split = msg.split_whitespace();
-                                if let Some(cmd) = split.next() {
-                                    let args = split.map(|s| s.into()).collect();
-                                    hub_tx.broadcast(HubMessage::AdminCommand(cmd.into(), args))
-                                        .unwrap();
-                                }
+                    HubMessage::AdminMessage(text) => {
+                        irc_tx = await!(IrcWriter::new(irc_tx).privmsg(
+                            botnick.clone(),
+                            nick.clone(),
+                            text
+                        ))?.into()
+                    }
+                    HubMessage::Error(text) => {
+                        irc_tx = await!(IrcWriter::new(irc_tx).privmsg(
+                            botnick.clone(),
+                            nick.clone(),
+                            format!("ERROR: {}", text)
+                        ))?.into()
+                    }
+                    _ => (),
+                },
+                Either::B(Ok(irc_m)) => match irc_m.command {
+                    Command::PRIVMSG(to, msg) => {
+                        if to == botnick {
+                            let mut split = msg.split_whitespace();
+                            if let Some(cmd) = split.next() {
+                                let args = split.map(|s| s.into()).collect();
+                                hub_tx
+                                    .broadcast(HubMessage::AdminCommand(cmd.into(), args))
+                                    .unwrap();
                             }
                         }
-                        Command::PING(..) => {
-                            irc_tx =
-                                await!(IrcWriter::new(irc_tx).pong(irc_m.command.clone()))?.into()
-                        }
-                        _ => (),
                     }
-                }
+                    Command::PING(..) => {
+                        irc_tx = await!(IrcWriter::new(irc_tx).pong(irc_m.command.clone()))?.into()
+                    }
+                    _ => (),
+                },
                 Either::A(Err(_e)) => (),
                 Either::B(Err(_e)) => (),
             }
@@ -169,14 +175,19 @@ impl IrcGateway {
             };
         }
         rx = Box::new(futures::stream::iter_ok(commands_buffer).chain(rx));
-        Ok(auth_builder.complete().map(|x| (rx, x)).ok_or(Error::InvalidPassword))
+        Ok(auth_builder
+            .complete()
+            .map(|x| (rx, x))
+            .ok_or(Error::InvalidPassword))
     }
 
-    fn join_hub(shared: Arc<Mutex<Shared>>,
-                auth_info: AuthenticationInfo)
-                -> Result<(ChannelSender, Receiver)> {
+    fn join_hub(
+        shared: Arc<Mutex<Shared>>,
+        auth_info: AuthenticationInfo,
+    ) -> Result<(ChannelSender, Receiver)> {
         let hub_manager = &mut shared.lock().unwrap().hub_manager;
-        hub_manager.connect::<SlackGateway>(auth_info)
+        hub_manager
+            .connect::<SlackGateway>(auth_info)
             .and_then(|hub| hub.lock().unwrap().join())
             .map_err(Error::HubError)
     }
@@ -190,39 +201,50 @@ impl IrcGateway {
         };
 
         let writer = IrcWriter::new(tx);
-        let writer = await!(writer.rpl(hostname.clone(),
-                                       Response::RPL_WELCOME,
-                                       vec![nick.clone(),
-                                            ":Welcome to the Internet Relay Network".into()]))
-            ?;
-        let writer = await!(writer.rpl(hostname.clone(),
-                                       Response::RPL_YOURHOST,
-                                       vec![nick.clone(),
-                                            format!(":Your host is {}, running version \
-                                                     slack-irc-rs-0.1",
-                                                    hostname)]))
-            ?;
-        let writer = await!(writer.rpl(hostname.clone(),
-                                       Response::RPL_CREATED,
-                                       vec![nick.clone(),
-                                            ":This server was created sometime".into()]))
-            ?;
-        let writer = await!(writer.rpl(hostname.clone(),
-                                       Response::RPL_MYINFO,
-                                       vec![nick,
-                                            hostname.clone(),
-                                            "slack-irc-rs-0.1".into(),
-                                            "o".into(),
-                                            "o".into()]))
-            ?;
-        let writer = await!(writer.rpl(hostname.clone(),
-                                       Response::ERR_NOMOTD,
-                                       vec!["MOTD File is missing".into()]))
-            ?;
+        let writer = await!(writer.rpl(
+            hostname.clone(),
+            Response::RPL_WELCOME,
+            vec![
+                nick.clone(),
+                ":Welcome to the Internet Relay Network".into(),
+            ]
+        ))?;
+        let writer = await!(writer.rpl(
+            hostname.clone(),
+            Response::RPL_YOURHOST,
+            vec![
+                nick.clone(),
+                format!(
+                    ":Your host is {}, running version \
+                     slack-irc-rs-0.1",
+                    hostname
+                ),
+            ]
+        ))?;
+        let writer = await!(writer.rpl(
+            hostname.clone(),
+            Response::RPL_CREATED,
+            vec![nick.clone(), ":This server was created sometime".into()]
+        ))?;
+        let writer = await!(writer.rpl(
+            hostname.clone(),
+            Response::RPL_MYINFO,
+            vec![
+                nick,
+                hostname.clone(),
+                "slack-irc-rs-0.1".into(),
+                "o".into(),
+                "o".into(),
+            ]
+        ))?;
+        let writer = await!(writer.rpl(
+            hostname.clone(),
+            Response::ERR_NOMOTD,
+            vec!["MOTD File is missing".into()]
+        ))?;
         Ok(writer.into())
     }
 }
-
 
 #[derive(Default, Debug)]
 struct AuthenticationInfoBuilder {
@@ -281,26 +303,25 @@ impl IrcWriter {
     #[async]
     pub fn privmsg(self, from: String, to: String, msg: String) -> io::Result<IrcWriter> {
         let writer = await!(self.writer.send(IrcMessage {
-                tags: None,
-                prefix: Some(from),
-                command: Command::PRIVMSG(to.clone(), msg),
-            }))
-            .map_err(irc2io)?;
+            tags: None,
+            prefix: Some(from),
+            command: Command::PRIVMSG(to.clone(), msg),
+        })).map_err(irc2io)?;
         Ok(IrcWriter::new(writer))
     }
 
     #[async]
-    pub fn rpl(self,
-               hostname: String,
-               response: Response,
-               args: Vec<String>)
-               -> io::Result<IrcWriter> {
+    pub fn rpl(
+        self,
+        hostname: String,
+        response: Response,
+        args: Vec<String>,
+    ) -> io::Result<IrcWriter> {
         let writer = await!(self.writer.send(IrcMessage {
-                tags: None,
-                prefix: Some(hostname),
-                command: Command::Response(response, args, None),
-            }))
-            .map_err(irc2io)?;
+            tags: None,
+            prefix: Some(hostname),
+            command: Command::Response(response, args, None),
+        })).map_err(irc2io)?;
         Ok(IrcWriter::new(writer))
     }
 
@@ -308,16 +329,14 @@ impl IrcWriter {
     pub fn pong(self, ping: Command) -> io::Result<IrcWriter> {
         if let Command::PING(server1, server2) = ping {
             let writer = await!(self.writer.send(IrcMessage {
-                    tags: None,
-                    prefix: None,
-                    command: Command::PONG(server1, server2),
-                }))
-                .map_err(irc2io)?;
+                tags: None,
+                prefix: None,
+                command: Command::PONG(server1, server2),
+            })).map_err(irc2io)?;
             Ok(IrcWriter::new(writer))
         } else {
             Ok(self)
         }
-
     }
 
     pub fn into(self) -> IrcSink {

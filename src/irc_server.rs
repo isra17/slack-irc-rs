@@ -19,8 +19,14 @@ pub struct Shared {
 impl IrcServer {
     pub fn new() -> Self {
         let mut settings = config::Config::default();
-        settings.merge(config::File::with_name("settings.toml").required(false))
+        settings
+            .merge(config::File::with_name("settings.toml").required(false))
             .expect("Failed to parse settings.toml");
+        settings
+            .merge(config::File::with_name("slack.toml").required(false))
+            .expect("Failed to parse slack.toml");
+        println!("settings: {:?}", settings);
+
         let shared_settings = Arc::new(Mutex::new(settings));
         let hub_manager = HubManager::new(shared_settings.clone());
         IrcServer {
@@ -41,7 +47,8 @@ impl IrcServer {
 
         let listener = TcpListener::bind(&addr).unwrap();
         let state = self.state.clone();
-        let server = listener.incoming()
+        let server = listener
+            .incoming()
             .for_each(move |client| {
                 let gateway = IrcGateway::new(state.clone(), client);
                 tokio::spawn(gateway.run().then(|result| {
